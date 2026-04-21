@@ -1,0 +1,11 @@
+{
+  "debugMode": 0,
+  "vinApiKey": "b9eac597bbcf4a10b7ab438f7e8a2319feb22a6ebafb4322b7f6ec5",
+  "smsvendor": "http://login4.spearuc.com/MOBILE_APPS_API/sms_api.php?type=smsquicksend&user=selorgotp&pass=welcome123&sender=EVOLGN&t_id=1707166841244742343&",
+  "smsToParam": "mobile",
+  "_VINApiOwner_": "Test",
+  "_VINAPIKEY_": "b9eac597bbcf4a10b7ab438f7e8a2319feb22a6ebafb4322b7f6ec5",
+  "_VINBASEURL_": "https://Selorg.vineretail.com/RestWS/api/eretail/v1",
+  "_VINORDER_": "https://Selorg.vineretail.com/RestWS/api/eretail/v4/order/create",
+  "cachedData": 1
+}
