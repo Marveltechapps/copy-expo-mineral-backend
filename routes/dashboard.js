@@ -91,6 +91,73 @@ router.get('/me', authMiddleware, requireDashboard, async (req, res) => {
   }
 });
 
+/** PATCH display name and/or email for the logged-in admin (persisted to MongoDB). */
+router.patch('/me', authMiddleware, requireDashboard, async (req, res) => {
+  try {
+    if (!req.isAdmin) return res.status(403).json({ error: 'Admin token required' });
+    const { name, email } = req.body || {};
+    const db = getDB();
+    const adminId = new ObjectId(req.user.id);
+    const updates = {};
+    if (name !== undefined) {
+      const n = String(name).trim();
+      if (!n) return res.status(400).json({ error: 'Name cannot be empty' });
+      updates.name = n;
+    }
+    if (email !== undefined) {
+      const em = String(email).trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) {
+        return res.status(400).json({ error: 'Invalid email address' });
+      }
+      const taken = await db.collection('admin_users').findOne({ email: em, _id: { $ne: adminId } });
+      if (taken) return res.status(409).json({ error: 'Email is already in use by another admin' });
+      updates.email = em;
+    }
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'No changes provided' });
+    }
+    updates.updatedAt = new Date();
+    await db.collection('admin_users').updateOne({ _id: adminId }, { $set: updates });
+    const admin = await db.collection('admin_users').findOne({ _id: adminId });
+    if (!admin) return res.status(404).json({ error: 'Admin not found' });
+    res.json({ id: String(admin._id), name: admin.name, email: admin.email, role: admin.role });
+  } catch (err) {
+    console.error('Dashboard PATCH /me error:', err);
+    res.status(500).json({ error: 'Failed to update profile' });
+  }
+});
+
+/** Change password for the logged-in admin. Uses 400 (not 401) on wrong current password so clients do not treat it as session expiry. */
+router.patch('/me/password', authMiddleware, requireDashboard, async (req, res) => {
+  try {
+    if (!req.isAdmin) return res.status(403).json({ error: 'Admin token required' });
+    const { currentPassword, newPassword } = req.body || {};
+    if (currentPassword == null || String(currentPassword).length === 0) {
+      return res.status(400).json({ error: 'Current password is required' });
+    }
+    if (newPassword == null || typeof newPassword !== 'string') {
+      return res.status(400).json({ error: 'New password is required' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters' });
+    }
+    const db = getDB();
+    const adminId = new ObjectId(req.user.id);
+    const admin = await db.collection('admin_users').findOne({ _id: adminId });
+    if (!admin) return res.status(404).json({ error: 'Admin not found' });
+    const valid = await bcrypt.compare(String(currentPassword), admin.passwordHash);
+    if (!valid) {
+      return res.status(400).json({ error: 'Current password is incorrect' });
+    }
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    await db.collection('admin_users').updateOne({ _id: adminId }, { $set: { passwordHash, updatedAt: new Date() } });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Dashboard PATCH /me/password error:', err);
+    res.status(500).json({ error: 'Failed to update password' });
+  }
+});
+
 router.post('/seed-admins', async (req, res) => {
   try {
     const dashKey = req.headers['x-dashboard-key'];
@@ -2726,10 +2793,69 @@ router.patch('/admin/integrations/:id', authMiddleware, requireDashboard, async 
   }
 });
 
+const DASHBOARD_ADMIN_ROLES = new Set(['ceo', 'operations_manager', 'support_agent', 'data_clerk']);
+
+/**
+ * Create a new dashboard admin (MongoDB). Only CEO can create accounts so new team members can sign in.
+ * Body: { name, email, password, role }
+ */
+router.post('/admin/admins', authMiddleware, requireDashboard, async (req, res) => {
+  try {
+    if (!req.isAdmin) return res.status(403).json({ error: 'Admin token required' });
+    if (req.user.role !== 'ceo') {
+      return res.status(403).json({ error: 'Only a CEO can create new admin accounts' });
+    }
+    const { name, email, password, role } = req.body || {};
+    const n = name != null ? String(name).trim() : '';
+    const em = email != null ? String(email).trim().toLowerCase() : '';
+    const pw = password != null ? String(password) : '';
+    const r = role != null ? String(role).trim() : '';
+    if (!n || !em || !pw) {
+      return res.status(400).json({ error: 'Name, email, and password are required' });
+    }
+    if (pw.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+    if (!DASHBOARD_ADMIN_ROLES.has(r)) {
+      return res.status(400).json({ error: 'Invalid role' });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) {
+      return res.status(400).json({ error: 'Invalid email address' });
+    }
+    const db = getDB();
+    const taken = await db.collection('admin_users').findOne({ email: em });
+    if (taken) {
+      return res.status(409).json({ error: 'An admin with this email already exists' });
+    }
+    const passwordHash = await bcrypt.hash(pw, 10);
+    const now = new Date();
+    const doc = {
+      name: n,
+      email: em,
+      passwordHash,
+      role: r,
+      status: 'Active',
+      createdAt: now,
+      updatedAt: now,
+    };
+    const result = await db.collection('admin_users').insertOne(doc);
+    res.status(201).json({
+      id: result.insertedId.toString(),
+      name: doc.name,
+      email: doc.email,
+      role: doc.role,
+      status: doc.status,
+    });
+  } catch (err) {
+    console.error('Dashboard POST /admin/admins error:', err);
+    res.status(500).json({ error: 'Failed to create admin' });
+  }
+});
+
 router.get('/admin/admins', authMiddleware, requireDashboard, async (req, res) => {
   try {
     const db = getDB();
-    const list = await db.collection('admin_users').find({}).project({ password: 0 }).sort({ createdAt: -1 }).toArray();
+    const list = await db.collection('admin_users').find({}).project({ password: 0, passwordHash: 0 }).sort({ createdAt: -1 }).toArray();
     res.json(list.map((a) => ({ id: a._id.toString(), ...a, _id: undefined })));
   } catch (err) {
     res.status(500).json({ error: 'Failed' });
